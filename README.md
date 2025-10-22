@@ -3,6 +3,7 @@
 - 🌱 I’m currently learning CompTIA A+ and Phyton
 - 💞️ I’m looking to collaborate on future projects
 - 📫 How to reach me Gambit-SU@protonmail.ch
+- 📫 How to reach me joshua.hughs21@gmail.com
 
 <!---
 GambitTi/GambitTi is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
