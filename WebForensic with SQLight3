@@ -1,0 +1,102 @@
+# ======= PowerShell Script ========
+# ======= Save as a .ps1 file ======
+# ======= Web Forensic Audit =======
+
+$ReportPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "Full_Browser_Forensics.txt"
+$Output = New-Object System.Collections.Generic.List[string]
+
+# --- Smart SQLite Detection ---
+$PossibleSqlitePaths = @(
+    "C:\Program Files\Sqlite3\sqlite3.exe",
+    "C:\Program Files (x86)\Sqlite3\sqlite3.exe",
+    "C:\sqlite3\sqlite3.exe",
+    "$env:USERPROFILE\Downloads\sqlite3.exe",
+    ".\sqlite3.exe"
+)
+
+$SQLitePath = $null
+foreach ($Path in $PossibleSqlitePaths) { if (Test-Path $Path) { $SQLitePath = $Path; break } }
+
+# --- Helper Functions ---
+function Add-Log ($Text) { $Output.Add($Text); Write-Host $Text }
+function Add-Header ($Title) { 
+    $Line = "=" * 50
+    Add-Log "`n$Line`n$Title`n$Line" 
+}
+
+function Invoke-ForensicQuery ($DbPath, $Query, $Label) {
+    if (-not $SQLitePath) { return }
+    $TempDB = [System.IO.Path]::GetTempFileName()
+    try {
+        Copy-Item $DbPath $TempDB -Force -ErrorAction Stop
+        Add-Log "  [+] $Label"
+        $Results = & $SQLitePath $TempDB $Query
+        foreach ($Row in $Results) { Add-Log "      -> $Row" }
+    } catch {
+        Add-Log "  [!] Error accessing DB: $Label"
+    } finally {
+        if (Test-Path $TempDB) { Remove-Item $TempDB -Force }
+    }
+}
+
+# --- Start Audit ---
+Add-Header "FORENSIC ENGINE STATUS"
+if ($SQLitePath) { Add-Log "[+] ENGINE READY: $SQLitePath" } else { Add-Log "[!] SQLITE NOT FOUND" }
+
+$Browsers = @{
+    "Chrome"  = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+    "Edge"    = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+    "Brave"   = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+    "Firefox" = "$env:APPDATA\Mozilla\Firefox\Profiles"
+}
+
+# --- Chromium Section ---
+foreach ($BName in @("Chrome", "Edge", "Brave")) {
+    $Root = $Browsers[$BName]
+    if (Test-Path $Root) {
+        Add-Header "$($BName.ToUpper()) INVESTIGATION"
+        Get-ChildItem $Root -Directory | Where-Object { $_.Name -match "^Profile|^Default" } | ForEach-Object {
+            $PPath = $_.FullName
+            Add-Log "[Profile] $($_.Name)"
+            
+            # History & Downloads
+            $HistDB = Join-Path $PPath "History"
+            if (Test-Path $HistDB) {
+                Invoke-ForensicQuery $HistDB "SELECT target_path FROM downloads ORDER BY start_time DESC LIMIT 5;" "Recent Downloads"
+                Invoke-ForensicQuery $HistDB "SELECT url FROM urls ORDER BY last_visit_time DESC LIMIT 10;" "Last 10 Visited Sites"
+            }
+        }
+    }
+}
+
+# --- Firefox Section ---
+if (Test-Path $Browsers["Firefox"]) {
+    Add-Header "FIREFOX INVESTIGATION"
+    Get-ChildItem $Browsers["Firefox"] -Directory | ForEach-Object {
+        $PPath = $_.FullName
+        Add-Log "[Profile] $($_.Name)"
+        
+        # Extensions
+        $ExtFile = Join-Path $PPath "extensions.json"
+        if (Test-Path $ExtFile) {
+            try {
+                $JSON = Get-Content $ExtFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                $JSON.addons | Where-Object { $_.active } | ForEach-Object { Add-Log "    [+] Ext: $($_.defaultLocale.name)" }
+            } catch {}
+        }
+
+        # SQLite
+        $FFDB = Join-Path $PPath "places.sqlite"
+        if (Test-Path $FFDB) {
+            Invoke-ForensicQuery $FFDB "SELECT url FROM moz_places ORDER BY last_visit_date DESC LIMIT 10;" "History (Top 10)"
+        }
+    }
+}
+
+# --- Finalize ---
+$Output | Out-File -FilePath $ReportPath -Force -Encoding UTF8
+Add-Header "AUDIT COMPLETE"
+Write-Host "Report saved: $ReportPath" -ForegroundColor Green
+
+$Notepad = "$env:SystemRoot\notepad.exe"
+if (Test-Path $Notepad) { Start-Process $Notepad -ArgumentList $ReportPath } else { Invoke-Item $ReportPath }
