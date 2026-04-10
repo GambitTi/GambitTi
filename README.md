@@ -1,6 +1,6 @@
 - 👋 Hi, I’m @GambitTi
 - 👀 I’m interested in building computers, and networks for my personal use.
-- 🌱 I’m currently learning CompTIA A+ and Phyton
+- 🌱 I’m a Certified Ethical Hacker
 - 💞️ I’m looking to collaborate on future projects
 - 📫 How to reach me Gambit-SU@protonmail.ch
 - 📫 How to reach me joshua.hughs21@gmail.com
