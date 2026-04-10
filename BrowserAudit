@@ -1,0 +1,144 @@
+# ======= PowerShell Script =======
+# ========= Browser Audit =========
+
+$desktop = [Environment]::GetFolderPath("Desktop")
+$report = Join-Path $desktop "Browser_Audit.txt"
+if (Test-Path $report) { Remove-Item $report }
+
+function Write-Section ($title) { "`n====== $title ======" | Out-File $report -Append }
+
+Write-Section "1. Installed Browsers (Detected by Registry & Protocol Handlers)"
+# Check for common browsers in registry
+$browserKeys = @(
+    "HKLM:\SOFTWARE\Clients\StartMenuInternet",
+    "HKCU:\SOFTWARE\Clients\StartMenuInternet"
+)
+foreach ($key in $browserKeys) {
+    if (Test-Path $key) {
+        Get-ChildItem $key | Select-Object PSChildName |
+            ForEach-Object { "Detected: $($_.PSChildName)" | Out-File $report -Append }
+    }
+}
+Write-Section "2. Default Browser"
+(Get-ItemProperty "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice" -ErrorAction SilentlyContinue |
+Select-Object ProgId) | Out-String | Out-File $report -Append
+
+Write-Section "3. Chrome/Edge/Brave-based Browser Information"
+$chromePaths = @(
+    "$env:LOCALAPPDATA\Google\Chrome\User Data",
+    "$env:LOCALAPPDATA\Microsoft\Edge\User Data",
+    "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data",
+    "$env:LOCALAPPDATA\Vivaldi\User Data"
+)
+foreach ($profilePath in $chromePaths) {
+    $browserType = ($profilePath -split '\\')[-3]
+    if (Test-Path $profilePath) {
+        Write-Section "$browserType - Profiles Found"
+        Get-ChildItem "$profilePath" -Directory | Where-Object { $_.Name -match "^Profile|^Default" } | ForEach-Object {
+            $userDir = $_.FullName
+
+            "Profile: $userDir" | Out-File $report -Append
+
+            # History: Query history SQLite DB if possible (requires pwsh 7+ and sqlite not locked)
+            $histdb = Join-Path $userDir "History"
+            if (Test-Path $histdb) {
+                try {
+                    # Use sqlite3.exe if available, otherwise just note
+                    $sqlite = "C:\Program Files\sqlite3\sqlite3.exe"
+                    if (Test-Path $sqlite) {
+                        &$sqlite $histdb "SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 10;" |
+                        Out-File $report -Append
+                    } else {
+                        "History file detected; install sqlite3.exe to export. Path: $histdb" | Out-File $report -Append
+                    }
+                } catch {
+                    "Could not export history (locked file or error)" | Out-File $report -Append
+                }
+            }
+
+            # DNS-over-HTTPS
+            $prefs = Join-Path $userDir "Preferences"
+            if (Test-Path $prefs) {
+                $prefsText = Get-Content $prefs -Raw
+                if ($prefsText -match "dns_over_https|secure_dns") {
+                    "Likely DoH setting present." | Out-File $report -Append
+                    $prefsText | Select-String "dns_over_https|secure_dns" | Out-File $report -Append
+                }
+            }
+
+            # Extensions list (manifest files)
+            $extDir = Join-Path $userDir "Extensions"
+            if (Test-Path $extDir) {
+                "Installed Chrome/Edge/Vivaldi/Brave extensions:" | Out-File $report -Append
+                Get-ChildItem $extDir -Recurse -Filter manifest.json -ErrorAction SilentlyContinue | ForEach-Object {
+                    try {
+                        $manifest = Get-Content $_.FullName -Raw | ConvertFrom-Json -ErrorAction SilentlyContinue
+                        "Name: $($manifest.name) | Version: $($manifest.version) | Desc: $($manifest.description)" | Out-File $report -Append
+                    } catch {}
+                }
+            }
+        }
+    }
+}
+
+Write-Section "4. Firefox Browser Info"
+$ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ffPath) {
+    Get-ChildItem $ffPath -Directory | ForEach-Object {
+        "Profile: $($_.FullName)" | Out-File $report -Append
+        # Extensions
+        $extFile = Join-Path $_.FullName "extensions.json"
+        if (Test-Path $extFile) {
+            try {
+                $json = Get-Content $extFile -Raw | ConvertFrom-Json
+                foreach ($ext in $json.addons) {
+                    "Firefox Ext: $($ext.name) | Version: $($ext.version) | Desc: $($ext.description)" | Out-File $report -Append
+                }
+            } catch {}
+        }
+        # History
+        $histdb = Join-Path $_.FullName "places.sqlite"
+        if (Test-Path $histdb) {
+            $sqlite = "C:\Program Files\sqlite3\sqlite3.exe"
+            if (Test-Path $sqlite) {
+                &$sqlite $histdb "SELECT url, title, visit_date FROM moz_places, moz_historyvisits WHERE moz_places.id=moz_historyvisits.place_id ORDER BY visit_date DESC LIMIT 10;" |
+                Out-File $report -Append
+            } else {
+                "Firefox history DB present; path: $histdb. Use sqlite3.exe or DB Browser to extract." | Out-File $report -Append
+            }
+        }
+    }
+}
+
+Write-Section "5. Other Browser Info (Opera, legacy IE, etc.)"
+# Opera
+$opera = "$env:APPDATA\Opera Software"
+if (Test-Path $opera) {
+    "Opera browser detected in $opera" | Out-File $report -Append
+}
+# Edge Legacy (IE Mode)
+$ieHists = @(
+    "$env:USERPROFILE\AppData\Local\Microsoft\Windows\WebCache\WebCacheV01.dat",
+    "$env:LOCALAPPDATA\Microsoft\Windows\WebCache\WebCacheV01.dat"
+)
+foreach ($iehist in $ieHists) {
+    if (Test-Path $iehist) {
+        "IE/Edge Legacy cache/hist found here: $iehist (use Nirsoft IE tools or ESEDatabaseView)" | Out-File $report -Append
+    }
+}
+
+Write-Section "6. Useful Tool Recommendations"
+@"
+- For history DBs, get DB Browser for SQLite (or install sqlite3.exe).
+- To dump browser passwords, use WebBrowserPassView from nirsoft.net (from a local admin shell).
+- Use Nirsoft's BrowsingHistoryView for a multi-browser artifact sweep.
+- Use Process Explorer or RAM capture for volatile plugin/data sniping in memory.
+"@ | Out-File $report -Append
+
+if (Test-Path "C:\Program Files\Notepad++\notepad++.exe") {
+    Start-Process "C:\Program Files\Notepad++\notepad++.exe" -ArgumentList "$report"
+} elseif (Test-Path $report) {
+    Invoke-Item $report
+}
+
+Write-Host "`nDONE! Check '$report' for results."
